@@ -1,0 +1,11 @@
+{
+  "name": "retailguard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RetailGuard - Offline-first POS and operations platform for multi-branch tile retailers",
+  "scripts": {
+    "dev": "npm run dev",
+    "build": "npm run build",
+    "start:prod": "npm run start:prod"
+  }
+}

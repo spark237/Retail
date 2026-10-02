@@ -1,0 +1,815 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Tenants ─────────────────────────────────────────────────────────
+
+model Tenant {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                String   @db.VarChar(255)
+  slug                String   @unique @db.VarChar(100)
+  domain              String?  @db.VarChar(255)
+  config              Json     @default("{}") @db.JsonB
+  isActive            Boolean  @default(true) @map("is_active")
+  subscriptionTier    String   @default("standard") @db.VarChar(50) @map("subscription_tier")
+  subscriptionExpiresAt DateTime? @map("subscription_expires_at") @db.Timestamptz
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  createdBy           String?  @map("created_by") @db.Uuid
+  updatedBy           String?  @map("updated_by") @db.Uuid
+  deletedAt           DateTime? @map("deleted_at") @db.Timestamptz
+
+  roles          Role[]
+  permissions    Permission[]
+  users          User[]
+  branches       Branch[]
+  warehouses     Warehouse[]
+  productCategories ProductCategory[]
+  products       Product[]
+  productPrices  ProductPrice[]
+  inventoryMovements InventoryMovement[]
+  sales          Sale[]
+  saleItems      SaleItem[]
+  payments       Payment[]
+  shifts         Shift[]
+  expenses       Expense[]
+  damageReports  DamageReport[]
+  auditLogs      AuditLog[]
+  syncLogs       SyncLog[]
+  fraudAlerts    FraudAlert[]
+  warehouseTransfers WarehouseTransfer[]
+  transferItems  TransferItem[]
+  refreshTokens  RefreshToken[]
+  deviceTrusts   DeviceTrust[]
+  rolePermissions RolePermission[]
+  userRoles      UserRole[]
+  userBranches   UserBranch[]
+
+  @@map("tenants")
+  @@index([slug])
+  @@index([isActive])
+}
+
+// ─── Roles & Permissions ─────────────────────────────────────────────
+
+model Role {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  name        String   @db.VarChar(100)
+  slug        String   @db.VarChar(100)
+  description String?  @db.Text
+  isSystem    Boolean  @default(false) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  createdBy   String?  @map("created_by") @db.Uuid
+  updatedBy   String?  @map("updated_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@map("roles")
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+}
+
+model Permission {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  resource    String   @db.VarChar(100)
+  action      String   @db.VarChar(50)
+  description String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+  @@unique([tenantId, resource, action])
+  @@index([tenantId])
+}
+
+model RolePermission {
+  roleId       String   @map("role_id") @db.Uuid
+  permissionId String   @map("permission_id") @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+  @@index([tenantId])
+}
+
+// ─── Users & Authentication ──────────────────────────────────────────
+
+model User {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId             String   @map("tenant_id") @db.Uuid
+  email                String   @unique @db.VarChar(255)
+  phone                String?  @db.VarChar(50)
+  firstName            String   @map("first_name") @db.VarChar(100)
+  lastName             String   @map("last_name") @db.VarChar(100)
+  passwordHash         String   @map("password_hash") @db.VarChar(255)
+  isActive             Boolean  @default(true) @map("is_active")
+  requiresPasswordChange Boolean @default(false) @map("requires_password_change")
+  failedLoginAttempts  Int      @default(0) @map("failed_login_attempts")
+  lockedUntil          DateTime? @map("locked_until") @db.Timestamptz
+  lastLoginAt          DateTime? @map("last_login_at") @db.Timestamptz
+  lastLoginIp          String?  @map("last_login_ip") @db.Inet
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  createdBy            String?  @map("created_by") @db.Uuid
+  updatedBy            String?  @map("updated_by") @db.Uuid
+  deletedAt            DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdByUser   User?            @relation("UserCreatedBy", fields: [createdBy], references: [id])
+  updatedByUser   User?            @relation("UserUpdatedBy", fields: [updatedBy], references: [id])
+  createdUsers    User[]           @relation("UserCreatedBy")
+  updatedUsers    User[]           @relation("UserUpdatedBy")
+  userRoles       UserRole[]
+  userBranches    UserBranch[]
+  refreshTokens   RefreshToken[]
+  deviceTrusts    DeviceTrust[]
+  shiftsAsCashier  Shift[]          @relation("ShiftCashier")
+  shiftsAsSupervisor Shift[]        @relation("ShiftSupervisor")
+  expenses        Expense[]
+  damageReports   DamageReport[]
+  sales           Sale[]           @relation("SaleCreatedBy")
+  salesUpdated    Sale[]           @relation("SaleUpdatedBy")
+  salesVoided     Sale[]           @relation("SaleVoidedBy")
+  inventoryMovements InventoryMovement[]
+  productPrices   ProductPrice[]
+  productsCreated Product[]        @relation("ProductCreatedBy")
+  productsUpdated Product[]        @relation("ProductUpdatedBy")
+  auditLogs       AuditLog[]
+  fraudAlertsAssigned   FraudAlert[] @relation("FraudAlertAssigned")
+  fraudAlertsResolved   FraudAlert[] @relation("FraudAlertResolved")
+  warehouseTransfersRequested WarehouseTransfer[] @relation("TransferRequestedBy")
+  warehouseTransfersApproved  WarehouseTransfer[] @relation("TransferApprovedBy")
+  warehouseTransfersReceived  WarehouseTransfer[] @relation("TransferReceivedBy")
+  paymentsConfirmed Payment[]     @relation("PaymentConfirmedBy")
+
+  @@map("users")
+  @@index([tenantId])
+  @@index([email])
+  @@index([tenantId, isActive])
+}
+
+model UserRole {
+  userId     String   @map("user_id") @db.Uuid
+  roleId     String   @map("role_id") @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at") @db.Timestamptz
+  assignedBy String?  @map("assigned_by") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+  @@index([tenantId])
+}
+
+model UserBranch {
+  userId     String   @map("user_id") @db.Uuid
+  branchId   String   @map("branch_id") @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  isPrimary  Boolean  @default(false) @map("is_primary")
+  assignedAt DateTime @default(now()) @map("assigned_at") @db.Timestamptz
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([userId, branchId])
+  @@map("user_branches")
+  @@index([tenantId])
+}
+
+model RefreshToken {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  tokenHash String    @map("token_hash") @db.VarChar(255)
+  deviceId  String?   @map("device_id") @db.VarChar(255)
+  deviceName String?  @map("device_name") @db.VarChar(255)
+  ipAddress String?   @map("ip_address") @db.Inet
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+  @@index([userId, tenantId])
+  @@index([deviceId])
+}
+
+model DeviceTrust {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  deviceId   String    @map("device_id") @db.VarChar(255)
+  deviceName String?   @map("device_name") @db.VarChar(255)
+  publicKey  String    @map("public_key") @db.Text
+  isTrusted  Boolean   @default(false) @map("is_trusted")
+  trustedAt  DateTime? @map("trusted_at") @db.Timestamptz
+  lastUsedAt DateTime  @default(now()) @map("last_used_at") @db.Timestamptz
+  expiresAt  DateTime? @map("expires_at") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("device_trust")
+  @@unique([userId, deviceId])
+  @@index([tenantId])
+}
+
+// ─── Branches & Warehouses ───────────────────────────────────────────
+
+model Branch {
+  id                       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId                 String   @map("tenant_id") @db.Uuid
+  code                     String   @db.VarChar(50)
+  name                     String   @db.VarChar(255)
+  address                  String?  @db.Text
+  city                     String?  @db.VarChar(100)
+  region                   String?  @db.VarChar(100)
+  phone                    String?  @db.VarChar(50)
+  email                    String?  @db.VarChar(255)
+  taxId                    String?  @map("tax_id") @db.VarChar(100)
+  isActive                 Boolean  @default(true) @map("is_active")
+  posTimeoutMinutes        Int      @default(480) @map("pos_timeout_minutes")
+  requiresSupervisorOverride Boolean @default(true) @map("requires_supervisor_override")
+  createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt                DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  warehouses   Warehouse[]
+  shifts       Shift[]
+  sales        Sale[]
+  expenses     Expense[]
+  damageReports DamageReport[]    @relation("DamageReportBranch")
+  syncLogs     SyncLog[]
+  fraudAlerts  FraudAlert[]
+  userBranches UserBranch[]
+  productPrices ProductPrice[]
+
+  @@map("branches")
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+model Warehouse {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  code      String   @db.VarChar(50)
+  name      String   @db.VarChar(255)
+  address   String?  @db.Text
+  city      String?  @db.VarChar(100)
+  region    String?  @db.VarChar(100)
+  phone     String?  @db.VarChar(50)
+  isActive  Boolean  @default(true) @map("is_active")
+  branchId  String?  @map("branch_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch      Branch?          @relation(fields: [branchId], references: [id])
+  damageReports DamageReport[]  @relation("DamageReportWarehouse")
+
+  @@map("warehouses")
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+// ─── Products & Pricing ──────────────────────────────────────────────
+
+model ProductCategory {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  name        String   @db.VarChar(255)
+  slug        String   @db.VarChar(255)
+  description String?  @db.Text
+  parentId    String?  @map("parent_id") @db.Uuid
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  parent   ProductCategory?  @relation("CategoryParent", fields: [parentId], references: [id])
+  children ProductCategory[] @relation("CategoryParent")
+  products Product[]
+
+  @@map("product_categories")
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+}
+
+model Product {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  sku               String    @db.VarChar(100)
+  barcode           String?   @db.VarChar(100)
+  name              String    @db.VarChar(255)
+  description       String?   @db.Text
+  categoryId        String?   @map("category_id") @db.Uuid
+  brand             String?   @db.VarChar(255)
+  unitOfMeasure     String    @map("unit_of_measure") @db.VarChar(50)
+  stockUnit         String    @map("stock_unit") @db.VarChar(50)
+  stockToSqmFactor  Decimal?  @map("stock_to_sqm_factor") @db.Decimal(10, 6)
+  stockToPieceFactor Decimal? @map("stock_to_piece_factor") @db.Decimal(10, 6)
+  isActive          Boolean   @default(true) @map("is_active")
+  isDamageTracked   Boolean   @default(true) @map("is_damage_tracked")
+  reorderLevel      Decimal?  @map("reorder_level") @db.Decimal(15, 3)
+  reorderQuantity   Decimal?  @map("reorder_quantity") @db.Decimal(15, 3)
+  imageUrl          String?   @map("image_url") @db.Text
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  createdBy         String?   @map("created_by") @db.Uuid
+  updatedBy         String?   @map("updated_by") @db.Uuid
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant             Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category           ProductCategory?  @relation(fields: [categoryId], references: [id])
+  createdByUser      User?             @relation("ProductCreatedBy", fields: [createdBy], references: [id])
+  updatedByUser      User?             @relation("ProductUpdatedBy", fields: [updatedBy], references: [id])
+  productPrices      ProductPrice[]
+  inventoryMovements InventoryMovement[]
+  saleItems          SaleItem[]
+  damageReports      DamageReport[]
+  transferItems      TransferItem[]
+
+  @@map("products")
+  @@unique([tenantId, sku])
+  @@index([tenantId])
+  @@index([barcode])
+  @@index([categoryId])
+  @@index([tenantId, isActive])
+}
+
+model ProductPrice {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productId   String    @map("product_id") @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  branchId    String?   @map("branch_id") @db.Uuid
+  unit        String    @db.VarChar(50)
+  sellingPrice Decimal  @map("selling_price") @db.Decimal(15, 2)
+  costPrice   Decimal?  @map("cost_price") @db.Decimal(15, 2)
+  minPrice    Decimal?  @map("min_price") @db.Decimal(15, 2)
+  vatRate     Decimal   @default(19.25) @map("vat_rate") @db.Decimal(5, 2)
+  validFrom   DateTime  @default(now()) @map("valid_from") @db.Timestamptz
+  validTo     DateTime? @map("valid_to") @db.Timestamptz
+  isPromotional Boolean @default(false) @map("is_promotional")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  createdBy   String?   @map("created_by") @db.Uuid
+
+  product  Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch   Branch? @relation(fields: [branchId], references: [id])
+  createdByUser User? @relation(fields: [createdBy], references: [id])
+
+  @@map("product_prices")
+  @@unique([productId, tenantId, branchId, unit, validTo])
+  @@index([productId, tenantId])
+  @@index([branchId])
+  @@index([validTo])
+}
+
+// ─── Inventory — Immutable Ledger ────────────────────────────────────
+
+model InventoryMovement {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  productId     String   @map("product_id") @db.Uuid
+  locationType  String   @map("location_type") @db.VarChar(20)
+  locationId    String   @map("location_id") @db.Uuid
+  movementType  String   @map("movement_type") @db.VarChar(50)
+  quantity      Decimal  @db.Decimal(15, 3)
+  unit          String   @db.VarChar(50)
+  unitQuantity  Decimal? @map("unit_quantity") @db.Decimal(15, 3)
+  referenceType String?  @map("reference_type") @db.VarChar(50)
+  referenceId   String?  @map("reference_id") @db.Uuid
+  correctionId  String?  @map("correction_id") @db.Uuid
+  reason        String?  @db.Text
+  batchNumber   String?  @map("batch_number") @db.VarChar(100)
+  expiresAt     DateTime? @map("expires_at") @db.Timestamptz
+  recordedAt    DateTime @default(now()) @map("recorded_at") @db.Timestamptz
+  recordedBy    String   @map("recorded_by") @db.Uuid
+  syncStatus    String   @default("synced") @map("sync_status") @db.VarChar(20)
+  serverVersion Int      @default(1) @map("server_version")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant     Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  recordedByUser User @relation(fields: [recordedBy], references: [id])
+  correction InventoryMovement? @relation("MovementCorrection", fields: [correctionId], references: [id])
+  corrections InventoryMovement[] @relation("MovementCorrection")
+
+  @@map("inventory_movements")
+  @@unique([id, serverVersion])
+  @@index([tenantId])
+  @@index([productId, tenantId])
+  @@index([locationType, locationId, tenantId])
+  @@index([referenceType, referenceId])
+  @@index([recordedAt(sort: Desc)])
+  @@index([movementType])
+  @@index([syncStatus])
+}
+
+// ─── Sales ───────────────────────────────────────────────────────────
+
+model Sale {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  branchId         String    @map("branch_id") @db.Uuid
+  shiftId          String    @map("shift_id") @db.Uuid
+  customerId       String?   @map("customer_id") @db.Uuid
+  receiptNumber    String    @map("receipt_number") @db.VarChar(100)
+  subtotal         Decimal   @db.Decimal(15, 2)
+  discountAmount   Decimal   @default(0) @map("discount_amount") @db.Decimal(15, 2)
+  discountReason   String?   @map("discount_reason") @db.VarChar(255)
+  vatAmount        Decimal   @default(0) @map("vat_amount") @db.Decimal(15, 2)
+  totalAmount      Decimal   @map("total_amount") @db.Decimal(15, 2)
+  paymentStatus    String    @default("pending") @map("payment_status") @db.VarChar(50)
+  saleStatus       String    @default("completed") @map("sale_status") @db.VarChar(50)
+  voidReason       String?   @map("void_reason") @db.Text
+  voidedAt         DateTime? @map("voided_at") @db.Timestamptz
+  voidedBy         String?   @map("voided_by") @db.Uuid
+  syncStatus       String    @default("synced") @map("sync_status") @db.VarChar(20)
+  serverVersion    Int       @default(1) @map("server_version")
+  idempotencyKey   String?   @unique @map("idempotency_key") @db.VarChar(255)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  createdBy        String    @map("created_by") @db.Uuid
+  updatedBy        String?   @map("updated_by") @db.Uuid
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch   Branch  @relation(fields: [branchId], references: [id])
+  shift    Shift   @relation("ShiftSales", fields: [shiftId], references: [id])
+  createdByUser User @relation("SaleCreatedBy", fields: [createdBy], references: [id])
+  updatedByUser User? @relation("SaleUpdatedBy", fields: [updatedBy], references: [id])
+  voidedByUser User?  @relation("SaleVoidedBy", fields: [voidedBy], references: [id])
+  saleItems SaleItem[]
+  payments  Payment[]
+
+  @@map("sales")
+  @@index([tenantId])
+  @@index([branchId, tenantId])
+  @@index([shiftId])
+  @@index([createdAt(sort: Desc)])
+  @@index([saleStatus])
+  @@index([syncStatus])
+  @@index([receiptNumber, tenantId])
+  @@index([idempotencyKey])
+}
+
+model SaleItem {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  saleId            String   @map("sale_id") @db.Uuid
+  tenantId          String   @map("tenant_id") @db.Uuid
+  productId         String   @map("product_id") @db.Uuid
+  productName       String   @map("product_name") @db.VarChar(255)
+  sku               String   @db.VarChar(100)
+  unit              String   @db.VarChar(50)
+  quantity          Decimal  @db.Decimal(15, 3)
+  unitPrice         Decimal  @map("unit_price") @db.Decimal(15, 2)
+  lineDiscount      Decimal  @default(0) @map("line_discount") @db.Decimal(15, 2)
+  vatRate           Decimal  @default(19.25) @map("vat_rate") @db.Decimal(5, 2)
+  vatAmount         Decimal  @default(0) @map("vat_amount") @db.Decimal(15, 2)
+  lineTotal         Decimal  @map("line_total") @db.Decimal(15, 2)
+  stockUnitQuantity Decimal? @map("stock_unit_quantity") @db.Decimal(15, 3)
+  syncStatus        String   @default("synced") @map("sync_status") @db.VarChar(20)
+  serverVersion     Int      @default(1) @map("server_version")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  sale    Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@map("sale_items")
+  @@index([saleId, tenantId])
+  @@index([productId, tenantId])
+  @@index([syncStatus])
+}
+
+model Payment {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  saleId              String    @map("sale_id") @db.Uuid
+  tenantId            String    @map("tenant_id") @db.Uuid
+  paymentType         String    @map("payment_type") @db.VarChar(50)
+  amount              Decimal   @db.Decimal(15, 2)
+  currency            String    @default("XAF") @db.VarChar(10)
+  reference           String?   @db.VarChar(255)
+  confirmationStatus  String    @default("pending") @map("confirmation_status") @db.VarChar(50)
+  confirmedAt         DateTime? @map("confirmed_at") @db.Timestamptz
+  confirmedBy         String?   @map("confirmed_by") @db.Uuid
+  momoPhone           String?   @map("momo_phone") @db.VarChar(20)
+  momoProvider        String?   @map("momo_provider") @db.VarChar(50)
+  momoTransactionId   String?   @map("momo_transaction_id") @db.VarChar(255)
+  changeAmount        Decimal   @default(0) @map("change_amount") @db.Decimal(15, 2)
+  syncStatus          String    @default("synced") @map("sync_status") @db.VarChar(20)
+  serverVersion       Int       @default(1) @map("server_version")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  sale        Sale   @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  confirmedByUser User? @relation("PaymentConfirmedBy", fields: [confirmedBy], references: [id])
+
+  @@map("payments")
+  @@index([saleId, tenantId])
+  @@index([paymentType])
+  @@index([confirmationStatus])
+  @@index([syncStatus])
+}
+
+// ─── Shifts ──────────────────────────────────────────────────────────
+
+model Shift {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  branchId        String    @map("branch_id") @db.Uuid
+  cashierId       String    @map("cashier_id") @db.Uuid
+  supervisorId    String?   @map("supervisor_id") @db.Uuid
+  openedAt        DateTime  @default(now()) @map("opened_at") @db.Timestamptz
+  closedAt        DateTime? @map("closed_at") @db.Timestamptz
+  openingBalance  Decimal   @default(0) @map("opening_balance") @db.Decimal(15, 2)
+  closingBalance  Decimal?  @map("closing_balance") @db.Decimal(15, 2)
+  expectedBalance Decimal?  @map("expected_balance") @db.Decimal(15, 2)
+  discrepancy     Decimal?  @map("discrepancy") @db.Decimal(15, 2)
+  discrepancyReason String? @map("discrepancy_reason") @db.Text
+  status          String    @default("open") @db.VarChar(50)
+  saleCount       Int       @default(0) @map("sale_count")
+  totalSales      Decimal   @default(0) @map("total_sales") @db.Decimal(15, 2)
+  totalCash       Decimal   @default(0) @map("total_cash") @db.Decimal(15, 2)
+  totalMomo       Decimal   @default(0) @map("total_momo") @db.Decimal(15, 2)
+  totalOther      Decimal   @default(0) @map("total_other") @db.Decimal(15, 2)
+  totalExpenses   Decimal   @default(0) @map("total_expenses") @db.Decimal(15, 2)
+  totalDiscounts  Decimal   @default(0) @map("total_discounts") @db.Decimal(15, 2)
+  totalVoids      Decimal   @default(0) @map("total_voids") @db.Decimal(15, 2)
+  notes           String?   @db.Text
+  syncStatus      String    @default("synced") @map("sync_status") @db.VarChar(20)
+  serverVersion   Int       @default(1) @map("server_version")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  createdBy       String    @map("created_by") @db.Uuid
+  updatedBy       String?   @map("updated_by") @db.Uuid
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch   Branch  @relation(fields: [branchId], references: [id])
+  cashier  User    @relation("ShiftCashier", fields: [cashierId], references: [id])
+  supervisor User? @relation("ShiftSupervisor", fields: [supervisorId], references: [id])
+  sales    Sale[]  @relation("ShiftSales")
+  expenses Expense[]
+
+  @@map("shifts")
+  @@index([tenantId])
+  @@index([branchId, tenantId])
+  @@index([cashierId])
+  @@index([status])
+  @@index([openedAt(sort: Desc)])
+  @@index([syncStatus])
+}
+
+// ─── Expenses ────────────────────────────────────────────────────────
+
+model Expense {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  branchId          String    @map("branch_id") @db.Uuid
+  shiftId           String?   @map("shift_id") @db.Uuid
+  expenseCategory   String    @map("expense_category") @db.VarChar(100)
+  amount            Decimal   @db.Decimal(15, 2)
+  description       String    @db.Text
+  receiptImageUrl   String?   @map("receipt_image_url") @db.Text
+  approvedBy        String?   @map("approved_by") @db.Uuid
+  approvedAt        DateTime? @map("approved_at") @db.Timestamptz
+  syncStatus        String    @default("synced") @map("sync_status") @db.VarChar(20)
+  serverVersion     Int       @default(1) @map("server_version")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  createdBy         String    @map("created_by") @db.Uuid
+  updatedBy         String?   @map("updated_by") @db.Uuid
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch   Branch  @relation(fields: [branchId], references: [id])
+  shift    Shift?  @relation(fields: [shiftId], references: [id])
+  createdByUser User @relation(fields: [createdBy], references: [id])
+
+  @@map("expenses")
+  @@index([tenantId])
+  @@index([branchId, tenantId])
+  @@index([shiftId])
+  @@index([createdAt(sort: Desc)])
+  @@index([syncStatus])
+}
+
+// ─── Damage Reports ──────────────────────────────────────────────────
+
+model DamageReport {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  branchId        String?   @map("branch_id") @db.Uuid
+  warehouseId     String?   @map("warehouse_id") @db.Uuid
+  productId       String    @map("product_id") @db.Uuid
+  quantity        Decimal   @db.Decimal(15, 3)
+  unit            String    @db.VarChar(50)
+  damageType      String    @map("damage_type") @db.VarChar(100)
+  description     String    @db.Text
+  photoUrls       String[]  @map("photo_urls")
+  estimatedLoss   Decimal?  @map("estimated_loss") @db.Decimal(15, 2)
+  status          String    @default("pending_review") @db.VarChar(50)
+  reviewedBy      String?   @map("reviewed_by") @db.Uuid
+  reviewedAt      DateTime? @map("reviewed_at") @db.Timestamptz
+  reviewNotes     String?   @map("review_notes") @db.Text
+  syncStatus      String    @default("synced") @map("sync_status") @db.VarChar(20)
+  serverVersion   Int       @default(1) @map("server_version")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  createdBy       String    @map("created_by") @db.Uuid
+  updatedBy       String?   @map("updated_by") @db.Uuid
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch    Branch?   @relation("DamageReportBranch", fields: [branchId], references: [id])
+  warehouse Warehouse? @relation("DamageReportWarehouse", fields: [warehouseId], references: [id])
+  product   Product   @relation(fields: [productId], references: [id])
+  createdByUser User  @relation(fields: [createdBy], references: [id])
+
+  @@map("damage_reports")
+  @@index([tenantId])
+  @@index([status])
+  @@index([syncStatus])
+}
+
+// ─── Audit Logs ──────────────────────────────────────────────────────
+
+model AuditLog {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  userId       String?  @map("user_id") @db.Uuid
+  action       String   @db.VarChar(100)
+  resourceType String   @map("resource_type") @db.VarChar(100)
+  resourceId   String?  @map("resource_id") @db.Uuid
+  details      Json?    @db.JsonB
+  ipAddress    String?  @map("ip_address") @db.Inet
+  userAgent    String?  @map("user_agent") @db.Text
+  deviceId     String?  @map("device_id") @db.VarChar(255)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([userId, tenantId])
+  @@index([action, tenantId])
+  @@index([resourceType, resourceId])
+}
+
+// ─── Sync Logs ───────────────────────────────────────────────────────
+
+model SyncLog {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  deviceId          String    @map("device_id") @db.VarChar(255)
+  branchId          String?   @map("branch_id") @db.Uuid
+  syncType          String    @map("sync_type") @db.VarChar(20)
+  status            String    @db.VarChar(20)
+  recordsSynced     Int       @default(0) @map("records_synced")
+  recordsFailed     Int       @default(0) @map("records_failed")
+  conflictsDetected Int       @default(0) @map("conflicts_detected")
+  conflictsResolved Int       @default(0) @map("conflicts_resolved")
+  errorMessage      String?   @map("error_message") @db.Text
+  durationMs        Int?      @map("duration_ms")
+  clientVersion     String?   @map("client_version") @db.VarChar(50)
+  idempotencyKey    String?   @map("idempotency_key") @db.VarChar(255)
+  startedAt         DateTime  @map("started_at") @db.Timestamptz
+  completedAt       DateTime? @map("completed_at") @db.Timestamptz
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch Branch? @relation(fields: [branchId], references: [id])
+
+  @@map("sync_logs")
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([deviceId, tenantId])
+  @@index([status])
+}
+
+// ─── Fraud Alerts ────────────────────────────────────────────────────
+
+model FraudAlert {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  branchId        String?   @map("branch_id") @db.Uuid
+  alertType       String    @map("alert_type") @db.VarChar(100)
+  severity        String    @db.VarChar(20)
+  score           Decimal   @db.Decimal(5, 2)
+  title           String    @db.VarChar(255)
+  description     String    @db.Text
+  details         Json?     @db.JsonB
+  status          String    @default("open") @db.VarChar(50)
+  assignedTo      String?   @map("assigned_to") @db.Uuid
+  resolvedBy      String?   @map("resolved_by") @db.Uuid
+  resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz
+  resolutionNotes String?   @map("resolution_notes") @db.Text
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch      Branch? @relation(fields: [branchId], references: [id])
+  assignedToUser User? @relation("FraudAlertAssigned", fields: [assignedTo], references: [id])
+  resolvedByUser User? @relation("FraudAlertResolved", fields: [resolvedBy], references: [id])
+
+  @@map("fraud_alerts")
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([branchId, tenantId])
+  @@index([alertType])
+  @@index([severity])
+  @@index([status])
+}
+
+// ─── Warehouse Transfers ─────────────────────────────────────────────
+
+model WarehouseTransfer {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  referenceNumber   String    @map("reference_number") @db.VarChar(100)
+  fromLocationType  String    @map("from_location_type") @db.VarChar(20)
+  fromLocationId    String    @map("from_location_id") @db.Uuid
+  toLocationType    String    @map("to_location_type") @db.VarChar(20)
+  toLocationId      String    @map("to_location_id") @db.Uuid
+  status            String    @default("draft") @db.VarChar(50)
+  requestedBy       String    @map("requested_by") @db.Uuid
+  approvedBy        String?   @map("approved_by") @db.Uuid
+  receivedBy        String?   @map("received_by") @db.Uuid
+  requestedAt       DateTime  @default(now()) @map("requested_at") @db.Timestamptz
+  approvedAt        DateTime? @map("approved_at") @db.Timestamptz
+  inTransitAt       DateTime? @map("in_transit_at") @db.Timestamptz
+  completedAt       DateTime? @map("completed_at") @db.Timestamptz
+  notes             String?   @db.Text
+  syncStatus        String    @default("synced") @map("sync_status") @db.VarChar(20)
+  serverVersion     Int       @default(1) @map("server_version")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestedByUser User @relation("TransferRequestedBy", fields: [requestedBy], references: [id])
+  approvedByUser User? @relation("TransferApprovedBy", fields: [approvedBy], references: [id])
+  receivedByUser User? @relation("TransferReceivedBy", fields: [receivedBy], references: [id])
+  transferItems TransferItem[]
+
+  @@map("warehouse_transfers")
+  @@index([tenantId])
+  @@index([fromLocationType, fromLocationId])
+  @@index([toLocationType, toLocationId])
+  @@index([status])
+  @@index([syncStatus])
+}
+
+model TransferItem {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  transferId        String   @map("transfer_id") @db.Uuid
+  tenantId          String   @map("tenant_id") @db.Uuid
+  productId         String   @map("product_id") @db.Uuid
+  quantity          Decimal  @db.Decimal(15, 3)
+  unit              String   @db.VarChar(50)
+  receivedQuantity  Decimal? @map("received_quantity") @db.Decimal(15, 3)
+  status            String   @default("pending") @db.VarChar(50)
+  syncStatus        String   @default("synced") @map("sync_status") @db.VarChar(20)
+  serverVersion     Int      @default(1) @map("server_version")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  transfer WarehouseTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product  Product           @relation(fields: [productId], references: [id])
+
+  @@map("transfer_items")
+  @@index([transferId, tenantId])
+  @@index([productId, tenantId])
+  @@index([syncStatus])
+}
