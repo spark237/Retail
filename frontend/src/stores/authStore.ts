@@ -51,12 +51,13 @@ export const useAuthStore = create<AuthState>()(
           throw new Error(errorData.message || 'Login failed');
         }
 
-        const data = await response.json();
+        const body = await response.json();
+        const data = body?.data ?? body;
         set({
-          token: data.token,
-          refreshToken: data.refreshToken,
-          user: data.user,
-          isAuthenticated: true,
+          token: data.accessToken ?? null,
+          refreshToken: data.refreshToken ?? null,
+          user: data.user ?? null,
+          isAuthenticated: Boolean(data.accessToken && data.user),
         });
       },
 
