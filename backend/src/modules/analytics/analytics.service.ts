@@ -418,4 +418,108 @@ export class AnalyticsService {
       timestamp: now.toISOString(),
     };
   }
+
+  // ─── Dashboard: sales trend (last 7 days) ─────────────────────────────
+  async getSalesTrend(tenantId: string, query?: DashboardQueryDto) {
+    const branchWhere = query?.branchId ? { branchId: query.branchId } : {};
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+
+    const sales = await this.prisma.sale.findMany({
+      where: {
+        tenantId,
+        ...branchWhere,
+        createdAt: { gte: start },
+        deletedAt: null,
+        saleStatus: { not: 'voided' },
+      },
+      select: { createdAt: true, totalAmount: true },
+    });
+
+    const localKey = (d: Date): string =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+    const byDay = new Map<string, { total: number; count: number }>();
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(start);
+      day.setDate(day.getDate() + i);
+      byDay.set(localKey(day), { total: 0, count: 0 });
+    }
+    for (const sale of sales) {
+      const entry = byDay.get(localKey(sale.createdAt));
+      if (entry) {
+        entry.total += Number(sale.totalAmount) || 0;
+        entry.count += 1;
+      }
+    }
+
+    return Array.from(byDay.entries()).map(([date, v]) => ({
+      date,
+      total: v.total,
+      count: v.count,
+    }));
+  }
+
+  // ─── Dashboard: payment method breakdown ──────────────────────────────
+  async getPaymentBreakdown(tenantId: string, query?: DashboardQueryDto) {
+    const branchWhere = query?.branchId ? { branchId: query.branchId } : {};
+    const grouped = await this.prisma.payment.groupBy({
+      by: ['paymentType'],
+      where: {
+        tenantId,
+        sale: { ...branchWhere, deletedAt: null, saleStatus: { not: 'voided' } },
+      },
+      _sum: { amount: true },
+      _count: { id: true },
+    });
+
+    return grouped.map((g) => ({
+      method: this.normalizePaymentMethod(g.paymentType),
+      total: Number(g._sum.amount) || 0,
+      count: g._count.id || 0,
+    }));
+  }
+
+  // ─── Dashboard: recent sales ──────────────────────────────────────────
+  async getRecentSales(tenantId: string, query?: DashboardQueryDto, limit = 10) {
+    const branchWhere = query?.branchId ? { branchId: query.branchId } : {};
+    const sales = await this.prisma.sale.findMany({
+      where: {
+        tenantId,
+        ...branchWhere,
+        deletedAt: null,
+        saleStatus: { not: 'voided' },
+      },
+      include: {
+        payments: { select: { paymentType: true, amount: true } },
+        createdByUser: { select: { firstName: true, lastName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+
+    return sales.map((sale) => ({
+      id: sale.id,
+      invoiceNumber: sale.receiptNumber,
+      total: Number(sale.totalAmount) || 0,
+      paymentMethod: this.normalizePaymentMethod(sale.payments[0]?.paymentType || 'cash'),
+      cashierName: sale.createdByUser
+        ? `${sale.createdByUser.firstName} ${sale.createdByUser.lastName}`.trim()
+        : 'Unknown',
+      createdAt: sale.createdAt.toISOString(),
+    }));
+  }
+
+  private normalizePaymentMethod(type: string): string {
+    const aliases: Record<string, string> = {
+      CASH: 'cash',
+      MTN_MOMO: 'mtn',
+      MOMO: 'mtn',
+      ORANGE_MONEY: 'orange',
+      ORANGE: 'orange',
+      BANK_TRANSFER: 'bank',
+      BANK: 'bank',
+    };
+    return aliases[type?.toUpperCase()] || String(type || 'cash').toLowerCase();
+  }
 }

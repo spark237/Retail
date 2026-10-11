@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { SyncService } from './sync.service';
-
+import { SyncController } from './sync.controller';
 @Module({
-  controllers: [],
+  controllers: [SyncController],
   providers: [SyncService],
   exports: [SyncService],
 })

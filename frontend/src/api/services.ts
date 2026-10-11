@@ -1,5 +1,6 @@
 import apiClient from './client';
 import db from '../lib/db';
+import { normalizeUser, type AuthUser } from '../stores/authStore';
 import type { Product, Inventory, Sale, Shift, Branch } from '../lib/db';
 
 // ============================================================
@@ -9,14 +10,7 @@ import type { Product, Inventory, Sale, Shift, Branch } from '../lib/db';
 export interface LoginResponse {
   token: string;
   refreshToken: string;
-  user: {
-    id: string;
-    email: string;
-    name: string;
-    role: 'admin' | 'manager' | 'cashier' | 'warehouse' | 'auditor';
-    branchId: string | null;
-    tenantId: string;
-  };
+  user: AuthUser;
 }
 
 export interface DashboardKpi {
@@ -161,37 +155,120 @@ async function tryApi<T>(apiCall: () => Promise<T>, fallback: () => Promise<T>):
 // ---- Auth ----
 
 export async function login(email: string, password: string, deviceId: string): Promise<LoginResponse> {
-  const response = await apiClient.post<LoginResponse>('/auth/login', {
+  const response = await apiClient.post('/auth/login', {
     email,
     password,
     deviceId,
   });
-  return response.data;
+  // The API wraps responses as { success, data: { accessToken, refreshToken, user } }.
+  const body = response.data as {
+    data?: { accessToken?: unknown; refreshToken?: unknown; user?: unknown };
+  };
+  const inner = body?.data ?? body;
+  const token = typeof inner.accessToken === 'string' ? inner.accessToken : null;
+  const refreshToken = typeof inner.refreshToken === 'string' ? inner.refreshToken : null;
+  const user = normalizeUser(inner.user);
+  if (!token || !user) {
+    throw new Error('Invalid login response: missing token or user');
+  }
+  return { token, refreshToken: refreshToken ?? '', user };
 }
 
 // ---- Products ----
 
+/** Loose shape of a product row as returned by the backend GET /products.
+ * The API sends the Prisma model with a nested `category` relation and prices
+ * in `productPrices[]`; the offline cache stores a flattened variant instead
+ * (see the Product type in lib/db.ts). */
+interface RawProduct {
+  id?: string;
+  serverId?: string;
+  name?: string;
+  sku?: string;
+  category?: string | { id?: string; name?: string; slug?: string } | null;
+  unitOfMeasure?: string;
+  stockUnit?: string;
+  price?: number;
+  costPrice?: number;
+  taxRate?: number;
+  createdAt?: string | Date | number;
+  updatedAt?: string | Date | number;
+  deletedAt?: string | Date | number | null;
+  productPrices?: Array<{
+    unit?: string;
+    sellingPrice?: number | string;
+    costPrice?: number | string | null;
+    vatRate?: number | string;
+    branchId?: string | null;
+  }>;
+}
+
+function toNumberValue(v: unknown): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+  return 0;
+}
+
+function toTimestamp(v: unknown): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') {
+    const t = new Date(v).getTime();
+    return Number.isFinite(t) ? t : 0;
+  }
+  if (v instanceof Date) return v.getTime();
+  return 0;
+}
+
 export async function getProducts(): Promise<Product[]> {
   return tryApi(
     async () => {
-      const response = await apiClient.get<Product[]>('/products');
-      // Cache in IndexedDB
-      for (const p of response.data) {
-        await db.products.put({
-          serverId: p.serverId || p.id?.toString() || null,
-          name: p.name,
-          sku: p.sku,
-          category: p.category,
-          unit: p.unit,
-          price: p.price,
-          costPrice: p.costPrice || 0,
-          taxRate: p.taxRate || 0,
-          createdAt: typeof p.createdAt === 'string' ? new Date(p.createdAt).getTime() : p.createdAt,
-          updatedAt: typeof p.updatedAt === 'string' ? new Date(p.updatedAt).getTime() : p.updatedAt,
-          deletedAt: p.deletedAt ? (typeof p.deletedAt === 'string' ? new Date(p.deletedAt).getTime() : p.deletedAt) : null,
-        });
+      const response = await apiClient.get<RawProduct[]>('/products');
+      // Cache in IndexedDB. The upsert is idempotent: rows are keyed by the
+      // server product id (serverId), reusing the local auto-increment `id` on
+      // re-sync, so repeated syncs update in place instead of duplicating rows.
+      const existingByServerId = new Map<string, number>();
+      for (const cached of await db.products.toArray()) {
+        if (cached.serverId) existingByServerId.set(cached.serverId, cached.id as number);
       }
-      return response.data;
+
+      const normalized: Product[] = [];
+
+      for (const raw of response.data) {
+        const serverId = raw.id || raw.serverId || null;
+        const localId = serverId ? existingByServerId.get(serverId) : undefined;
+        const categoryValue = raw.category;
+        const categoryName =
+          typeof categoryValue === 'string' && categoryValue
+            ? categoryValue
+            : categoryValue && typeof categoryValue === 'object' && categoryValue.name
+              ? categoryValue.name
+              : 'Uncategorized';
+        const price = raw.productPrices && raw.productPrices.length > 0
+          ? raw.productPrices[0]
+          : undefined;
+        const unit = price?.unit || raw.unitOfMeasure || raw.stockUnit || 'BOX';
+        const record: Product = {
+          ...(localId !== undefined ? { id: localId } : {}),
+          serverId,
+          name: raw.name || '',
+          sku: raw.sku || '',
+          category: categoryName,
+          unit,
+          price: toNumberValue(price?.sellingPrice ?? raw.price),
+          costPrice: toNumberValue(price?.costPrice ?? raw.costPrice),
+          taxRate: toNumberValue(price?.vatRate ?? raw.taxRate),
+          createdAt: toTimestamp(raw.createdAt),
+          updatedAt: toTimestamp(raw.updatedAt),
+          deletedAt: raw.deletedAt ? toTimestamp(raw.deletedAt) : null,
+        };
+        // The returned rows MUST be the flattened variant: the POS renders
+        // product.category / product.price directly, and the raw API rows
+        // carry the category as a relation object ({id, name, slug}), which
+        // crashes React ("Objects are not valid as a React child", #31).
+        normalized.push(record);
+        await db.products.put(record);
+      }
+      return normalized;
     },
     async () => {
       const cached = await db.products.where('deletedAt').equals(null).toArray();

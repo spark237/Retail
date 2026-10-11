@@ -42,7 +42,17 @@ apiClient.interceptors.request.use(
 
 // Response interceptor — handle 401 and refresh
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // The API wraps every response as { success, data }. Unwrap it here so
+    // callers receive the actual payload; without this, services that do
+    // `.map()` on `response.data` (dashboard trend/breakdown, products) crash
+    // with "g.map is not a function" / iterate an envelope instead of an array.
+    const body = response.data as { success?: unknown; data?: unknown } | null;
+    if (body && typeof body === 'object' && 'success' in body && 'data' in body) {
+      response.data = body.data;
+    }
+    return response;
+  },
   async (error: AxiosError) => {
     const originalRequest = (error.config || {}) as AxiosRequestConfig & {
       _retry?: boolean;
@@ -92,9 +102,21 @@ apiClient.interceptors.response.use(
           { refreshToken },
         );
 
-        const { token: newToken, refreshToken: newRefreshToken } = response.data;
-        setTokens(newToken, newRefreshToken);
+        // The API wraps responses as { success, data: { accessToken, refreshToken } }.
+        const body = response.data as {
+          data?: { accessToken?: unknown; refreshToken?: unknown };
+        };
+        const data = body?.data ?? body;
+        const newToken = typeof data.accessToken === 'string' ? data.accessToken : null;
+        const newRefreshToken = typeof data.refreshToken === 'string' ? data.refreshToken : null;
 
+        if (!newToken) {
+          processQueue(new Error('Token refresh failed: missing access token'), null);
+          logout();
+          return Promise.reject(error);
+        }
+
+        setTokens(newToken, newRefreshToken ?? '');
         processQueue(null, newToken);
 
         if (originalRequest.headers) {

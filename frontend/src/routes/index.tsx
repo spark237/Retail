@@ -10,7 +10,7 @@ function hasRole(allowedRoles?: string[]): boolean {
   const { user, isAuthenticated } = useAuthStore.getState();
   if (!allowedRoles || allowedRoles.length === 0) return true;
   if (!isAuthenticated || !user) return false;
-  return allowedRoles.includes(user.role);
+  return user.role !== null && allowedRoles.includes(user.role);
 }
 
 interface ProtectedRouteProps {
