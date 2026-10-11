@@ -1,13 +1,54 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+export type UserRole = 'admin' | 'manager' | 'cashier' | 'warehouse' | 'auditor' | 'supervisor';
+
 export interface AuthUser {
   id: string;
   email: string;
   name: string;
-  role: 'admin' | 'manager' | 'cashier' | 'warehouse' | 'auditor';
+  /** Singular role derived from the API's `roles` array. `null` when unknown. */
+  role: UserRole | null;
+  /** Raw roles array as returned by the API. */
+  roles: UserRole[];
   branchId: string | null;
   tenantId: string;
+}
+
+/**
+ * Normalize the API user shape ({ id, firstName, lastName, roles: [...] })
+ * into the AuthUser the rest of the app consumes (singular `role`, `name`).
+ * Idempotent: passing an already-normalized AuthUser returns the same values.
+ */
+export function normalizeUser(raw: unknown): AuthUser | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const u = raw as Record<string, unknown>;
+  const roles = Array.isArray(u.roles)
+    ? (u.roles.filter((r): r is UserRole => typeof r === 'string') as UserRole[])
+    : [];
+  const firstName = typeof u.firstName === 'string' ? u.firstName : '';
+  const lastName = typeof u.lastName === 'string' ? u.lastName : '';
+  const rawName = typeof u.name === 'string' ? u.name : '';
+  const branches = Array.isArray(u.branches)
+    ? (u.branches as Array<{ id?: unknown }>)
+    : [];
+  return {
+    id: u.id != null ? String(u.id) : '',
+    email: typeof u.email === 'string' ? u.email : '',
+    name:
+      rawName ||
+      [firstName, lastName].filter(Boolean).join(' ').trim() ||
+      (typeof u.email === 'string' ? u.email : ''),
+    role: (typeof u.role === 'string' ? (u.role as UserRole) : null) ?? roles[0] ?? null,
+    roles,
+    branchId:
+      typeof u.branchId === 'string'
+        ? u.branchId
+        : branches[0]?.id != null
+          ? String(branches[0].id)
+          : null,
+    tenantId: u.tenantId != null ? String(u.tenantId) : '',
+  };
 }
 
 interface AuthState {
@@ -25,7 +66,7 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       token: null,
       refreshToken: null,
       user: null,
@@ -41,7 +82,7 @@ export const useAuthStore = create<AuthState>()(
             body: JSON.stringify({
               email,
               password,
-              deviceId: get().deviceId,
+              deviceId: useAuthStore.getState().deviceId,
             }),
           },
         );
@@ -51,12 +92,14 @@ export const useAuthStore = create<AuthState>()(
           throw new Error(errorData.message || 'Login failed');
         }
 
-        const data = await response.json();
+        const body = await response.json();
+        const data = body?.data ?? body;
+        const user = normalizeUser(data.user);
         set({
-          token: data.token,
-          refreshToken: data.refreshToken,
-          user: data.user,
-          isAuthenticated: true,
+          token: typeof data.accessToken === 'string' ? data.accessToken : null,
+          refreshToken: typeof data.refreshToken === 'string' ? data.refreshToken : null,
+          user,
+          isAuthenticated: Boolean(data.accessToken && user),
         });
       },
 
@@ -74,7 +117,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       setUser: (user: AuthUser) => {
-        set({ user });
+        set({ user: normalizeUser(user) });
       },
 
       setDeviceId: (deviceId: string) => {
@@ -90,6 +133,17 @@ export const useAuthStore = create<AuthState>()(
         deviceId: state.deviceId,
         isAuthenticated: state.isAuthenticated,
       }),
+      // Rehydration may deliver a user persisted before normalization existed
+      // (raw API shape with `roles` and no singular `role`). Normalize on load.
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<AuthState> | undefined;
+        const storedUser = persisted?.user ?? null;
+        return {
+          ...currentState,
+          ...persisted,
+          user: storedUser ? normalizeUser(storedUser) : currentState.user,
+        };
+      },
     },
   ),
 );

@@ -1,5 +1,5 @@
 import { lazy, Suspense, type ReactNode, type ComponentType } from 'react';
-import { createBrowserRouter, Navigate } from 'react-router-dom';
+import { createBrowserRouter, Navigate, useRouteError } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 
 /**
@@ -10,7 +10,7 @@ function hasRole(allowedRoles?: string[]): boolean {
   const { user, isAuthenticated } = useAuthStore.getState();
   if (!allowedRoles || allowedRoles.length === 0) return true;
   if (!isAuthenticated || !user) return false;
-  return allowedRoles.includes(user.role);
+  return user.role !== null && allowedRoles.includes(user.role);
 }
 
 interface ProtectedRouteProps {
@@ -47,9 +47,40 @@ function LazyLoad({ loader }: { loader: () => Promise<{ default: ComponentType<u
 }
 
 /**
+ * Route-level error boundary. A page crash must render an error state,
+ * never a blank/white screen.
+ */
+export function RouteErrorBoundary() {
+  const error = useRouteError();
+  const message =
+    error instanceof Error ? error.message : 'An unexpected error occurred while rendering this page.';
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-gray-50 p-6">
+      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-100">
+        <svg className="h-8 w-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+        </svg>
+      </div>
+      <h1 className="text-xl font-semibold text-gray-900">Something went wrong</h1>
+      <p className="max-w-md break-words text-center text-sm text-gray-600">{message}</p>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        className="rounded-lg bg-blue-600 px-6 py-3 text-sm font-medium text-white hover:bg-blue-700 min-h-[44px]"
+      >
+        Reload page
+      </button>
+    </div>
+  );
+}
+
+/**
  * Route definitions for the RetailGuard frontend.
  */
 export const router = createBrowserRouter([
+  {
+    errorElement: <RouteErrorBoundary />,
+    children: [
   {
     path: '/login',
     element: <LazyLoad loader={() => import('../pages/LoginPage')} />,
@@ -133,5 +164,7 @@ export const router = createBrowserRouter([
   {
     path: '*',
     element: <Navigate to="/dashboard" replace />,
+  },
+    ],
   },
 ]);
