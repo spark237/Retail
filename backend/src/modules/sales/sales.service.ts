@@ -1,6 +1,8 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
+import { ProductPrice } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { CreateSaleDto, VoidSaleDto, SaleQueryDto } from './dto/sales.dto';
+import { canonicalPrice, pickPriceForBranch, priceFloor } from '../../common/pricing.util';
 
 // Payment type for iterating payments in sale creation
 interface SalePayment {
@@ -71,6 +73,84 @@ export class SalesService {
 
     const productMap = new Map(products.map((p) => [p.id, p]));
 
+    // ─── Server-side price integrity ────────────────────────────────────
+    // The client-supplied unitPrice is never trusted at face value. The
+    // canonical selling price is resolved from `product_prices` (branch-scoped
+    // row for the sale's branch if one exists, otherwise the tenant-wide row)
+    // for the item's unit, and is the authoritative price for the line.
+    // A submitted price strictly below the floor (min_price, falling back to
+    // the canonical price) is an under-ringing attempt: the sale is rejected
+    // with a 4xx AND a `price_below_floor` fraud alert is raised in real time
+    // so it surfaces in /fraud-alerts. Absent or non-positive submitted prices
+    // are derived from the canonical price instead of producing a 0 total.
+    const units = [...new Set(dto.items.map((i: { unit: string }) => i.unit))];
+    const priceRows = await this.prisma.productPrice.findMany({
+      where: {
+        tenantId,
+        productId: { in: productIds },
+        unit: { in: units },
+        validFrom: { lte: new Date() },
+        OR: [{ validTo: null }, { validTo: { gt: new Date() } }],
+      },
+    });
+    const priceRowMap = new Map<string, ProductPrice[]>();
+    for (const row of priceRows) {
+      const key = `${row.productId}|${row.unit}`;
+      const bucket = priceRowMap.get(key) ?? [];
+      bucket.push(row);
+      priceRowMap.set(key, bucket);
+    }
+    const canonicalPrices = new Map<string, number>();
+    for (const item of dto.items) {
+      const product = productMap.get(item.productId)!;
+      const key = `${item.productId}|${item.unit}`;
+      const priceRow = pickPriceForBranch(priceRowMap.get(key) ?? [], dto.branchId);
+      const canonical = canonicalPrice(priceRow);
+      const floor = priceFloor(priceRow);
+      if (priceRow == null || canonical == null) {
+        throw new BadRequestException({
+          code: 'PRICE_NOT_CONFIGURED',
+          message: `No selling price is configured for ${product.name} (unit: ${item.unit}).`,
+        });
+      }
+      canonicalPrices.set(key, canonical);
+      const submitted = item.unitPrice;
+      if (submitted == null || !(submitted > 0)) {
+        continue; // derive from the canonical price — never a 0-total sale
+      }
+      if (floor != null && submitted < floor) {
+        const underRingPct = Math.min(100, Math.max(50, ((canonical - submitted) / canonical) * 100));
+        await this.prisma.fraudAlert.create({
+          data: {
+            tenantId,
+            branchId: dto.branchId,
+            alertType: 'price_below_floor',
+            severity: 'high',
+            score: Math.round(underRingPct * 100) / 100,
+            title: `Under-ring attempt: ${product.name} (${item.unit}) - unit price ${submitted} below floor ${floor}`,
+            description: `Sale for ${branch.name} was rejected: submitted unit price ${submitted} XAF is below the allowed floor of ${floor} XAF for ${product.name} (${item.unit}). Canonical price is ${canonical} XAF.`,
+            details: {
+              productId: item.productId,
+              productName: product.name,
+              sku: product.sku,
+              unit: item.unit,
+              submittedPrice: submitted,
+              canonicalPrice: canonical,
+              floorPrice: floor,
+              branchId: dto.branchId,
+              shiftId: dto.shiftId,
+              attemptedBy: createdBy,
+              endpoint: 'POST /api/v1/sales',
+            },
+          },
+        });
+        throw new BadRequestException({
+          code: 'PRICE_BELOW_FLOOR',
+          message: `Sale rejected: ${product.name} (${item.unit}) unit price ${submitted} XAF is below the allowed minimum floor of ${floor} XAF (canonical ${canonical} XAF).`,
+        });
+      }
+    }
+
     // Generate receipt number
     const receiptNumber = await this.generateReceiptNumber(tenantId, dto.branchId);
 
@@ -106,7 +186,9 @@ export class SalesService {
 
       for (const item of dto.items) {
         const product = productMap.get(item.productId)!;
-        const lineTotal = item.unitPrice * item.quantity;
+        // Authoritative server-resolved price (never the raw client payload)
+        const lineUnitPrice = canonicalPrices.get(`${item.productId}|${item.unit}`)!;
+        const lineTotal = lineUnitPrice * item.quantity;
         const lineDiscount = item.lineDiscount || 0;
         const vatRate = item.vatRate ?? 19.25;
         const lineAfterDiscount = lineTotal - lineDiscount;
@@ -134,7 +216,7 @@ export class SalesService {
             sku: product.sku,
             unit: item.unit,
             quantity: item.quantity,
-            unitPrice: item.unitPrice,
+            unitPrice: lineUnitPrice,
             lineDiscount,
             vatRate: vatRate,
             vatAmount: lineVat,
