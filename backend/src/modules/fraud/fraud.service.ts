@@ -33,6 +33,9 @@ export class FraudService {
     // Rule 5: Frequent sale voids
     const voidAlerts = await this.detectFrequentVoids(tenantId, branchId);
     alerts.push(...voidAlerts);
+    // Rule 6: Under-ringing (sale items priced below the product price floor)
+    const priceAlerts = await this.detectPriceBelowFloor(tenantId, branchId);
+    alerts.push(...priceAlerts);
 
     // Create alerts in database
     let created = 0;
@@ -281,6 +284,81 @@ export class FraudService {
           details: { branchId: v.branchId, voidedBy: v.voidedBy, voidCount: v._count.id },
         });
       }
+    }
+
+    return alerts;
+  }
+
+  // Rule 6: Under-ring detection — sale items recorded below the configured
+  // price floor (min_price, falling back to the canonical selling price from
+  // `product_prices`, branch-scoped row when one exists else tenant-wide).
+  // Catches under-ringing that slipped through as well as any legacy rows
+  // (e.g. zero-price items) — the single most common POS leak.
+  private async detectPriceBelowFloor(tenantId: string, branchId?: string): Promise<any[]> {
+    const alerts: any[] = [];
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    const items = await this.prisma.saleItem.findMany({
+      where: {
+        tenantId,
+        createdAt: { gte: since },
+        ...(branchId ? { sale: { branchId } } : {}),
+      },
+      include: {
+        product: { select: { name: true, sku: true } },
+        sale: { select: { id: true, branchId: true, receiptNumber: true } },
+      },
+      take: 5000,
+    });
+    if (items.length === 0) return alerts;
+
+    const productIds = [...new Set(items.map((i) => i.productId))];
+    const itemUnits = [...new Set(items.map((i) => i.unit))];
+    const priceRows = await this.prisma.productPrice.findMany({
+      where: { tenantId, productId: { in: productIds }, unit: { in: itemUnits } },
+    });
+    const priceRowMap = new Map<string, any[]>();
+    for (const row of priceRows) {
+      const key = `${row.productId}|${row.unit}`;
+      const bucket = priceRowMap.get(key) ?? [];
+      bucket.push(row);
+      priceRowMap.set(key, bucket);
+    }
+
+    for (const item of items) {
+      const rows = priceRowMap.get(`${item.productId}|${item.unit}`) ?? [];
+      const saleBranchId = item.sale?.branchId ?? null;
+      const effectiveBranchId = branchId ?? saleBranchId;
+      const branchRow =
+        rows.find((r) => r.branchId === effectiveBranchId) ?? rows.find((r) => r.branchId === null);
+      if (!branchRow) continue; // no configured price — not this rule's concern
+
+      const canonical = Number(branchRow.sellingPrice);
+      const floor = branchRow.minPrice != null ? Number(branchRow.minPrice) : canonical;
+      const submitted = Number(item.unitPrice);
+      if (submitted >= floor && submitted > 0) continue;
+
+      const underRingPct = canonical > 0 ? Math.min(100, Math.max(50, ((canonical - submitted) / canonical) * 100)) : 100;
+      alerts.push({
+        branchId: item.sale?.branchId ?? undefined,
+        alertType: 'price_below_floor',
+        severity: 'high',
+        score: Math.round(underRingPct * 100) / 100,
+        title: `Under-ring detected: ${item.product.name} (${item.unit}) - unit price ${submitted} below floor ${floor}`,
+        description: `Sale ${item.sale?.receiptNumber ?? item.saleId} recorded ${item.product.name} (${item.unit}) at ${submitted} XAF/unit, below the floor of ${floor} XAF (canonical ${canonical} XAF).`,
+        details: {
+          saleId: item.sale?.id ?? null,
+          receiptNumber: item.sale?.receiptNumber ?? null,
+          saleItemId: item.id,
+          productId: item.productId,
+          productName: item.product.name,
+          sku: item.product.sku,
+          unit: item.unit,
+          unitPrice: submitted,
+          canonicalPrice: canonical,
+          floorPrice: floor,
+        },
+      });
     }
 
     return alerts;
