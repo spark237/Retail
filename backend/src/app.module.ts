@@ -16,6 +16,7 @@ import { DamagesModule } from './modules/damages/damages.module';
 import { SyncModule } from './modules/sync/sync.module';
 import { FraudModule } from './modules/fraud/fraud.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { ReportsModule } from './modules/reports/reports.module';
 import { PrismaModule } from './database/prisma.module';
 
 @Module({
@@ -51,6 +52,7 @@ import { PrismaModule } from './database/prisma.module';
     SyncModule,
     FraudModule,
     AnalyticsModule,
+    ReportsModule,
   ],
   providers: [
     {
